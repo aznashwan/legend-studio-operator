@@ -1,14 +1,43 @@
 # Copyright 2021 Canonical
 # See LICENSE file for licensing details.
-#
-# TEMPLATE-TODO: change this example to suit your needs.
-# If you don't need a config, you can remove the file entirely.
-# It ties in to the example _on_config_changed handler in src/charm.py
-#
-# Learn more about config at: https://juju.is/docs/sdk/config
 
 options:
-  thing:
-    default: 🎁
-    description: A thing used by the charm.
+
+  ### Application-related options:
+  # TODO(aznashwan): determine if usecase of multiple connectors
+  # on different ports is worth pursuing and parameterizing:
+  server-application-connector-port-http:
+    type: int
+    default: 8080
+    description: |
+      The port number on which application traffic should be served.
+  
+  # TODO(aznashwan): add a separate option for https endpoints?
+  # Will need to see what certificates needs installing and where.
+
+  server-ui-path:
+    type: string
+    default: /studio
+    description: |
+      The root path (exluding protocol, host, or port declaration) under
+      which the Studio UI should be server.
+
+  server-logging-level:
+    type: string
+    default: INFO
+    description: |
+      String identifier of the log level to be used for all library classes.
+      Must be one of INFO, WARN, DEBUG, or TRACE, or OFF.
+
+  server-pac4j-logging-level:
+    type: string
+    default: "DEBUG"
+    description: |
+      String identifier of the log level to be used by authentication-related
+      PAC4J actions. Must be one of INFO, WARN, DEBUG, or TRACE, or OFF.
+
+  # TODO(aznashwan): remove these after gitlab relation defined:
+  gitlab-client-id:
+    type: string
+  gitlab-client-secret:
     type: string

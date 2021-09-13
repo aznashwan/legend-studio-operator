@@ -1,23 +1,42 @@
 # Copyright 2021 Canonical
 # See LICENSE file for licensing details.
 
-# For a complete list of supported options, see:
-# https://discourse.charmhub.io/t/charm-metadata-v2/3674/15
 name: legend-studio-operator
-display-name: |
-  TEMPLATE-TODO: fill out a display name for the Charmcraft store
+
+# TODO(aznashwan): ask who should be here:
+maintainer: Nashwan Azhari <nazhari@cloudbasesolutions.com>
+
+display-name: FINOS Legend Studio Server
 description: |
-  TEMPLATE-TODO: fill out the charm's description
+  Data model integration and query service for the FINOS Legend stack.
 summary: |
-  TEMPLATE-TODO: fill out the charm's summary
+  Data model integration and query service for the FINOS Legend stack.
 
-# TEMPLATE-TODO: replace with containers for your workload (delete for non-k8s)
+description: |
+  Data model integration and query service for the FINOS Legend stack.
+
+# TODO(aznashwan): request feedback for these:
+tags:
+- finos
+- fintech
+- legend
+
+requires:
+  legend-db:
+    interface: legend_mongodb
+    # TODO(aznashwan): will we need a second relation for the PAC4J Mongo
+    # backend settings or can we have two databases created in just one?
+    limit: 1
+    optional: false
+    scope: global
+
+# TODO(aznashwan): add SDLC and Engine relations:
+
 containers:
-  httpbin:
-    resource: httpbin-image
+  studio:
+    resource: studio-image
 
-# TEMPLATE-TODO: each container defined above must specify an oci-image resource
 resources:
-  httpbin-image:
+  studio-image:
     type: oci-image
-    description: OCI image for httpbin (kennethreitz/httpbin)
+    description: OCI image for the Engine (finos/legend-studio)
