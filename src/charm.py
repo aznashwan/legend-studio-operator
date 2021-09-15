@@ -354,10 +354,11 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             self, event: charm.RelationChangedEvent) -> None:
         rel_id = event.relation.id
         rel = self.framework.model.get_relation("legend-db", rel_id)
-        mongo_creds_json = rel.data[self.app].get("legend-db-connection")
+        mongo_creds_json = rel.data[event.app].get("legend-db-connection")
         if not mongo_creds_json:
             self.unit.status = model.WaitingStatus(
                 "Awaiting DB relation data.")
+            event.defer()
             return
         logger.debug(
             "Mongo JSON credentials returned by DB relation: %s",
