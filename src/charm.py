@@ -12,6 +12,9 @@ from ops import framework
 from ops import main
 from ops import model
 
+from charms.nginx_ingress_integrator.v0 import ingress
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +43,16 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         super().__init__(*args)
 
         self._set_stored_defaults()
+
+        self.ingress = ingress.IngressRequires(
+            self,
+            {
+                "service-hostname": self.app.name,
+                "service-name": self.app.name,
+                "service-port": self.model.config[
+                    'server-application-connector-port-http'],
+            },
+        )
 
         # Standard charm lifecycle events:
         self.framework.observe(
@@ -247,22 +260,22 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             "uiPath": studio_ui_path,
             "html5Router": True,
             "server": {
-              "type": "simple",
-              "applicationContextPath": "/",
-              "adminContextPath": "%s/admin" % studio_ui_path,
-              "connector": {
-                "type": APPLICATION_CONNECTOR_TYPE_HTTP,
-                "port": self.model.config[
-                    'server-application-connector-port-http']
-              }
+                "type": "simple",
+                "applicationContextPath": "/",
+                "adminContextPath": "%s/admin" % studio_ui_path,
+                "connector": {
+                    "type": APPLICATION_CONNECTOR_TYPE_HTTP,
+                    "port": self.model.config[
+                        'server-application-connector-port-http']
+                }
             },
             "logging": {
-              "level": server_logging_level,
-              "loggers": {
-                "root": {"level": server_logging_level},
-                "org.pac4j": {"level": pac4j_logging_level}
-              },
-              "appenders": [{"type": "console"}]
+                "level": server_logging_level,
+                "loggers": {
+                    "root": {"level": server_logging_level},
+                    "org.pac4j": {"level": pac4j_logging_level}
+                },
+                "appenders": [{"type": "console"}]
             },
             "pac4j": {
                 "callbackPrefix": "/studio/log.in",

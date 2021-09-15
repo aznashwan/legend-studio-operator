@@ -42,7 +42,8 @@ requires:
     optional: false
     scope: global
 
-# TODO(aznashwan): add SDLC and Engine relations:
+  ingress:
+    interface: ingress
 
 containers:
   studio:
