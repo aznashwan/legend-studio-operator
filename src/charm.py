@@ -4,7 +4,6 @@
 
 """ Module defining the Charmed operator for the FINOS Legend Studio. """
 
-import functools
 import json
 import logging
 
@@ -56,11 +55,27 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             self.on["legend-db"].relation_changed,
             self._on_db_relation_changed)
 
-        # TODO(aznashwan): add SDLC and Engine relations:
+        # SDLC relation events:
+        self.framework.observe(
+            self.on["legend-sdlc"].relation_joined,
+            self._on_sdlc_relation_joined)
+        self.framework.observe(
+            self.on["legend-sdlc"].relation_changed,
+            self._on_sdlc_relation_changed)
+
+        # Engine relation events:
+        self.framework.observe(
+            self.on["legend-engine"].relation_joined,
+            self._on_engine_relation_joined)
+        self.framework.observe(
+            self.on["legend-engine"].relation_changed,
+            self._on_engine_relation_changed)
 
     def _set_stored_defaults(self) -> None:
         self._stored.set_default(log_level="DEBUG")
         self._stored.set_default(mongodb_credentials={})
+        self._stored.set_default(sdlc_service_url="")
+        self._stored.set_default(engine_service_url="")
 
     def _on_studio_pebble_ready(self, event: framework.EventBase) -> None:
         """Define the Studio workload using the Pebble API.
@@ -85,7 +100,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
                         "-XX:MaxRAMPercentage=60 -Dfile.encoding=UTF8 -cp "
                         "/app/bin/webapp-content:/app/bin/* "
                         "org.finos.legend.server.shared.staticserver.Server "
-                        "server %s" % (
+                        "server %s'" % (
                             STUDIO_HTTP_CONFIG_FILE_CONTAINER_LOCAL_PATH)
                     ),
                     # NOTE(aznashwan): considering the Studio service expects
@@ -111,6 +126,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         self.unit.status = model.BlockedStatus(
             "Awaiting Legend Database and Gitlab relations.")
 
+    def _get_logging_level_from_config(self, option_name):
         """Fetches the config option with the given name and checks to
         ensure that it is a valid `java.utils.logging` log level.
 
@@ -126,12 +142,27 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             return None
         return value
 
-    def _get_ui_config_from_relation_data(self):
-        """Returns a dict which can be serialized into JSON and passed to
-        the Studio service.
+    def _add_ui_config_from_relation_data(self, ui_config):
+        """This method adds all relevant Studio UI config options into the
+        provided dict to be directly rendered to JSON and passed to the Studio.
+
+        Returns:
+            None if all of the config options derived from the config/relations
+            are present and have passed Charm-side valiation steps.
+            A `model.BlockedStatus` instance with a relevant message otherwise.
         """
+        sdlc_url = self._stored.sdlc_service_url
+        if not sdlc_url:
+            return model.BlockedStatus(
+                "Need Legend SDLC relation to configure the Studio service.")
+
+        engine_url = self._stored.engine_service_url
+        if not engine_url:
+            return model.BlockedStatus(
+                "Need Legend Engine relation to configure Studio service.")
+
         # TODO(aznashwan): fill in the URLs from relation data:
-        return {
+        ui_config.update({
             "appName": "studio",
             "env": "test",
             "sdlc": {
@@ -152,7 +183,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
                     "TEMPORARY__disableServiceRegistration": True
                 }
             }
-        }
+        })
 
     def _add_base_service_config_from_charm_config(
             self, studio_http_config: dict = {}) -> model.BlockedStatus:
@@ -220,7 +251,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
               "applicationContextPath": "/",
               "adminContextPath": "%s/admin" % studio_ui_path,
               "connector": {
-                "type": "APPLICATION_CONNECTOR_TYPE_HTTP",
+                "type": APPLICATION_CONNECTOR_TYPE_HTTP,
                 "port": self.model.config[
                     'server-application-connector-port-http']
               }
@@ -309,18 +340,18 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         possible_blocked_status = (
             self._add_base_service_config_from_charm_config(config))
         if possible_blocked_status:
-            logger.warning("Missing/erroneous configuration options")
             self.unit.status = possible_blocked_status
             return
 
-        ui_config = self._get_ui_config_from_relation_data()
-        if not ui_config:
-            self.unit.status = model.BlockedStatus(
-                "Missing relation data for UI config file.")
+        ui_config = {}
+        possible_blocked_status = self._add_ui_config_from_relation_data(
+            ui_config)
+        if possible_blocked_status:
+            self.unit.status = possible_blocked_status
             return
 
         container = self.unit.get_container("studio")
-        with container.can_connect():
+        if container.can_connect():
             logger.debug("Updating Studio service configuration")
             self._add_config_file_to_container(
                 container,
@@ -329,7 +360,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             self._add_config_file_to_container(
                 container,
                 STUDIO_UI_CONFIG_FILE_CONTAINER_LOCAL_PATH,
-                config)
+                ui_config)
             self._restart_studio_service(container)
             self.unit.status = model.ActiveStatus(
                 "Studio service has been started.")
@@ -379,6 +410,45 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             mongo_creds)
 
         self._stored.mongodb_credentials = mongo_creds
+
+        # Attempt to reconfigure and restart the service with the new data:
+        self._reconfigure_studio_service()
+
+    def _on_sdlc_relation_joined(self, event: charm.RelationJoinedEvent):
+        logger.debug("No actions are to be performed after SDLC relation join")
+
+    def _on_sdlc_relation_changed(
+            self, event: charm.RelationChangedEvent) -> None:
+        rel_id = event.relation.id
+        rel = self.framework.model.get_relation("legend-sdlc", rel_id)
+        sdlc_url = rel.data[event.app].get("legend-sdlc-url")
+        if not sdlc_url:
+            self.unit.status = model.WaitingStatus(
+                "Waiting for SDLC relation to report service URL.")
+            return
+
+        logger.info("### SDLC URL received from relation: %s", sdlc_url)
+        self._stored.sdlc_service_url = sdlc_url
+
+        # Attempt to reconfigure and restart the service with the new data:
+        self._reconfigure_studio_service()
+
+    def _on_engine_relation_joined(self, event: charm.RelationJoinedEvent):
+        logger.debug(
+            "No actions are to be performed after engine relation join")
+
+    def _on_engine_relation_changed(
+            self, event: charm.RelationChangedEvent) -> None:
+        rel_id = event.relation.id
+        rel = self.framework.model.get_relation("legend-engine", rel_id)
+        engine_url = rel.data[event.app].get("legend-engine-url")
+        if not engine_url:
+            self.unit.status = model.WaitingStatus(
+                "Waiting for Engine relation to report service URL.")
+            return
+
+        logger.info("### Engine URL received from relation: %s", engine_url)
+        self._stored.engine_service_url = engine_url
 
         # Attempt to reconfigure and restart the service with the new data:
         self._reconfigure_studio_service()

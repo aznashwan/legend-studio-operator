@@ -30,6 +30,18 @@ requires:
     optional: false
     scope: global
 
+  legend-sdlc:
+    interface: legend_sdlc
+    limit: 1
+    optional: false
+    scope: global
+
+  legend-engine:
+    interface: legend_engine
+    limit: 1
+    optional: false
+    scope: global
+
 # TODO(aznashwan): add SDLC and Engine relations:
 
 containers:
