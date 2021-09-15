@@ -13,7 +13,7 @@ from ops import framework
 from ops import main
 from ops import model
 
-LOG = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 STUDIO_UI_CONFIG_FILE_CONTAINER_LOCAL_PATH = "/ui-config.json"
@@ -30,19 +30,6 @@ GITLAB_PROJECT_VISIBILITY_PRIVATE = "private"
 GITLAB_REQUIRED_SCOPES = ["openid", "profile", "api"]
 GITLAB_OPENID_DISCOVERY_URL = (
     "https://gitlab.com/.well-known/openid-configuration")
-
-
-def _logged_charm_entry_point(fun):
-    """ Add logging for method call/exits. """
-    @functools.wraps(fun)
-    def _inner(*args, **kwargs):
-        LOG.info(
-            "### Initiating Legend Studio charm call to '%s'", fun.__name__)
-        res = fun(*args, **kwargs)
-        LOG.info(
-            "### Completed Legend Studio charm call to '%s'", fun.__name__)
-        return res
-    return _inner
 
 
 class LegendStudioServerOperatorCharm(charm.CharmBase):
@@ -75,7 +62,6 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         self._stored.set_default(log_level="DEBUG")
         self._stored.set_default(mongodb_credentials={})
 
-    @_logged_charm_entry_point
     def _on_studio_pebble_ready(self, event: framework.EventBase) -> None:
         """Define the Studio workload using the Pebble API.
         Note that this will *not* start the service, but instead leave it in a
@@ -125,7 +111,6 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         self.unit.status = model.BlockedStatus(
             "Awaiting Legend Database and Gitlab relations.")
 
-    def _get_logging_level_from_config(self, option_name) -> str:
         """Fetches the config option with the given name and checks to
         ensure that it is a valid `java.utils.logging` log level.
 
@@ -133,7 +118,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         """
         value = self.model.config[option_name]
         if value not in VALID_APPLICATION_LOG_LEVEL_SETTINGS:
-            LOG.warning(
+            logger.warning(
                 "Invalid Java logging level value provided for option "
                 "'%s': '%s'. Valid Java logging levels are: %s. The charm "
                 "shall block until a proper value is set.",
@@ -293,23 +278,23 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         """Serializes the provided config dict to JSON and adds it in the
         Studio service container under the provided path via Pebble API.
         """
-        LOG.debug(
+        logger.debug(
             "Adding following config under '%s' in container: %s",
             container_path, config)
         container.push(
             container_path,
             json.dumps(config),
             make_dirs=True)
-        LOG.info(
+        logger.info(
             "Successfully wrote config file in container under '%s'",
             container_path)
 
     def _restart_studio_service(self, container: model.Container) -> None:
         """Restarts the Studio service using the Pebble container API.
         """
-        LOG.debug("Restarting Studio service")
+        logger.debug("Restarting Studio service")
         container.restart("studio")
-        LOG.debug("Successfully issues Studio service restart")
+        logger.debug("Successfully issues Studio service restart")
 
     def _reconfigure_studio_service(self) -> None:
         """Generates the JSON config for the Studio server and adds it
@@ -324,7 +309,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         possible_blocked_status = (
             self._add_base_service_config_from_charm_config(config))
         if possible_blocked_status:
-            LOG.warning("Missing/erroneous configuration options")
+            logger.warning("Missing/erroneous configuration options")
             self.unit.status = possible_blocked_status
             return
 
@@ -336,7 +321,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
 
         container = self.unit.get_container("studio")
         with container.can_connect():
-            LOG.debug("Updating Studio service configuration")
+            logger.debug("Updating Studio service configuration")
             self._add_config_file_to_container(
                 container,
                 STUDIO_HTTP_CONFIG_FILE_CONTAINER_LOCAL_PATH,
@@ -350,11 +335,10 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
                 "Studio service has been started.")
             return
 
-        LOG.info("Studio container is not active yet. No config to update.")
+        logger.info("Studio container is not active yet. No config to update.")
         self.unit.status = model.BlockedStatus(
             "Awaiting Legend DB and Gitlab relations.")
 
-    @_logged_charm_entry_point
     def _on_config_changed(self, _) -> None:
         """Reacts to configuration changes to the service by:
         - regenerating the YAML config for the Studio server
@@ -363,11 +347,9 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         """
         self._reconfigure_studio_service()
 
-    @_logged_charm_entry_point
     def _on_db_relation_joined(self, event: charm.RelationJoinedEvent):
-        LOG.debug("No actions are to be performed during DB relation join")
+        logger.debug("No actions are to be performed during DB relation join")
 
-    @_logged_charm_entry_point
     def _on_db_relation_changed(
             self, event: charm.RelationChangedEvent) -> None:
         rel_id = event.relation.id
@@ -377,7 +359,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             self.unit.status = model.WaitingStatus(
                 "Awaiting DB relation data.")
             return
-        LOG.debug(
+        logger.debug(
             "Mongo JSON credentials returned by DB relation: %s",
             mongo_creds_json)
 
@@ -385,13 +367,13 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         try:
             mongo_creds = json.loads(mongo_creds_json)
         except (ValueError, TypeError) as ex:
-            LOG.warn(
+            logger.warn(
                 "Exception occured while deserializing DB relation "
                 "connection data: %s", str(ex))
             self.unit.status = model.BlockedStatus(
                 "Could not deserialize Legend DB connection data.")
             return
-        LOG.debug(
+        logger.debug(
             "Deserialized Mongo credentials returned by DB relation: %s",
             mongo_creds)
 
