@@ -12,6 +12,7 @@ from ops import framework
 from ops import main
 from ops import model
 
+from charms.finos_legend_db_k8s.v0 import legend_database
 from charms.nginx_ingress_integrator.v0 import ingress
 
 
@@ -21,8 +22,11 @@ logger = logging.getLogger(__name__)
 STUDIO_UI_CONFIG_FILE_CONTAINER_LOCAL_PATH = "/ui-config.json"
 STUDIO_HTTP_CONFIG_FILE_CONTAINER_LOCAL_PATH = "/http-config.json"
 
+APPLICATION_SERVER_UI_PATH = "/studio"
 APPLICATION_CONNECTOR_TYPE_HTTP = "http"
+APPLICATION_CONNECTOR_PORT_HTTP = 8080
 APPLICATION_CONNECTOR_TYPE_HTTPS = "https"
+APPLICATION_CONNECTOR_PORT_HTTPS = 8081
 
 VALID_APPLICATION_LOG_LEVEL_SETTINGS = [
     "INFO", "WARN", "DEBUG", "TRACE", "OFF"]
@@ -44,13 +48,14 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
 
         self._set_stored_defaults()
 
+        self._legend_db_consumer = legend_database.LegendDatabaseConsumer(
+            self)
         self.ingress = ingress.IngressRequires(
             self,
             {
                 "service-hostname": self.app.name,
                 "service-name": self.app.name,
-                "service-port": self.model.config[
-                    'server-application-connector-port-http'],
+                "service-port": APPLICATION_CONNECTOR_PORT_HTTP,
             },
         )
 
@@ -86,7 +91,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
 
     def _set_stored_defaults(self) -> None:
         self._stored.set_default(log_level="DEBUG")
-        self._stored.set_default(mongodb_credentials={})
+        self._stored.set_default(legend_db_credentials={})
         self._stored.set_default(sdlc_service_url="")
         self._stored.set_default(engine_service_url="")
 
@@ -230,43 +235,24 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
                 "or missing. Please review the debug-log for more details.")
 
         # Check Mongo-related options:
-        mongo_creds = self._stored.mongodb_credentials
-        if not mongo_creds or 'replica_set_uri' not in mongo_creds:
+        mongo_creds = self._stored.legend_db_credentials
+        if not mongo_creds:
             return model.BlockedStatus(
                 "No stored MongoDB credentials were found yet. Please "
-                "ensure the Charm is properly related to MongoDB.")
-        mongo_replica_set_uri = self._stored.mongodb_credentials[
-            'replica_set_uri']
-        databases = mongo_creds.get('databases')
-        database_name = None
-        if databases:
-            database_name = databases[0]
-            # NOTE(aznashwan): the Java MongoDB can't handle DB names in the
-            # URL, so we need to trim that part and pass the database name
-            # as a separate parameter within the config as the
-            # studio_config['pac4j']['mongoDb'] option below.
-            split_uri = [
-                elem
-                for elem in mongo_replica_set_uri.split('/')[:-1]
-                # NOTE: filter any empty strings resulting from double-slashes:
-                if elem]
-            # NOTE: schema prefix needs two slashes added back:
-            mongo_replica_set_uri = "%s//%s" % (
-                split_uri[0], "/".join(split_uri[1:]))
-        studio_ui_path = self.model.config["server-ui-path"]
+                "ensure the Charm is properly related to the Legend "
+                "Database Manager charm.")
 
         # Compile base config:
         studio_http_config.update({
-            "uiPath": studio_ui_path,
+            "uiPath": APPLICATION_SERVER_UI_PATH,
             "html5Router": True,
             "server": {
                 "type": "simple",
                 "applicationContextPath": "/",
-                "adminContextPath": "%s/admin" % studio_ui_path,
+                "adminContextPath": "%s/admin" % APPLICATION_SERVER_UI_PATH,
                 "connector": {
                     "type": APPLICATION_CONNECTOR_TYPE_HTTP,
-                    "port": self.model.config[
-                        'server-application-connector-port-http']
+                    "port": APPLICATION_CONNECTOR_PORT_HTTP
                 }
             },
             "logging": {
@@ -280,8 +266,8 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             "pac4j": {
                 "callbackPrefix": "/studio/log.in",
                 "bypassPaths": ["/studio/admin/healthcheck"],
-                "mongoUri": mongo_replica_set_uri,
-                "mongoDb": database_name,
+                "mongoUri": mongo_creds['uri'],
+                "mongoDb": mongo_creds['database'],
                 "clients": [{
                     "org.finos.legend.server.pac4j.gitlab.GitlabClient": {
                         "name": "gitlab",
@@ -396,33 +382,17 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
 
     def _on_db_relation_changed(
             self, event: charm.RelationChangedEvent) -> None:
-        rel_id = event.relation.id
-        rel = self.framework.model.get_relation("legend-db", rel_id)
-        mongo_creds_json = rel.data[event.app].get("legend-db-connection")
-        if not mongo_creds_json:
+        mongo_creds = self._legend_db_consumer.get_legend_database_creds(
+            event.relation.id)
+        if not mongo_creds:
             self.unit.status = model.WaitingStatus(
                 "Awaiting DB relation data.")
             event.defer()
             return
         logger.debug(
-            "Mongo JSON credentials returned by DB relation: %s",
-            mongo_creds_json)
-
-        mongo_creds = None
-        try:
-            mongo_creds = json.loads(mongo_creds_json)
-        except (ValueError, TypeError) as ex:
-            logger.warn(
-                "Exception occured while deserializing DB relation "
-                "connection data: %s", str(ex))
-            self.unit.status = model.BlockedStatus(
-                "Could not deserialize Legend DB connection data.")
-            return
-        logger.debug(
-            "Deserialized Mongo credentials returned by DB relation: %s",
+            "Mongo credentials returned by DB relation: %s",
             mongo_creds)
-
-        self._stored.mongodb_credentials = mongo_creds
+        self._stored.legend_db_credentials = mongo_creds
 
         # Attempt to reconfigure and restart the service with the new data:
         self._reconfigure_studio_service()

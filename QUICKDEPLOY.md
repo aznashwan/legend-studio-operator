@@ -52,9 +52,9 @@ charmcraft pack
 Please use the following common config for all the services requiring one:
 ```bash
 $ cat config.yml
-# NOTE: replace the following with either 'legend-sdlc-server-operator'
-# or 'legend-studio-operator' as needed for the other services:
-legend-engine-server-operator:
+# NOTE: replace the following with either 'finos-legend-sdlc-k8s'
+# or 'finos-legend-studio-k8s' as needed for the other services:
+finos-legend-engine-k8s:
         gitlab-client-id: <Gitlab App Client ID>
         gitlab-client-secret: <Gitlab App Client Sevret>
 ```
@@ -62,41 +62,41 @@ legend-engine-server-operator:
 ### Database manager:
 ```bash
 juju --debug \
-	deploy ./legend-database-manager_ubuntu-20.04-amd64.charm \
+	deploy ./finos-legend-db-k8s_ubuntu-20.04-amd64.charm \
 	--resource dbamn-noop-image=ubuntu:latest
-juju add-relation legend-database-manager mongodb-k8s
+juju add-relation finos-legend-db-k8s mongodb-k8s
 ```
 
 ### SDLC:
 ```bash
 juju --debug \
-	deploy ./legend-sdlc-server-operator_ubuntu-20.04-amd64.charm \
+	deploy ./finos-legend-sdlc-k8s_ubuntu-20.04-amd64.charm \
 	--config /path/to/sdlc-config.yaml \
 	--resource sdlc-image=finos/legend-sdlc-server:0.47.0
 
-juju add-relation legend-sdlc-server-operator legend-database-manager
+juju add-relation finos-legend-sdlc-k8s finos-legend-db-k8s
 ```
 
 ### Engine:
 ```bash
 juju --debug \
-	deploy ./legend-engine-server-operator_ubuntu-20.04-amd64.charm \
+	deploy ./finos-legend-engine-k8s_ubuntu-20.04-amd64.charm \
 	--config /path/to/engine-config.yaml \
 	--resource engine-image=finos/legend-engine-server:2.41.0
 
-juju add-relation legend-engine-server-operator legend-database-manager
+juju add-relation finos-legend-engine-k8s finos-legend-db-k8s
 ```
 
 ### Studio:
 ```bash
 juju --debug \
-	deploy ./legend-studio-operator_ubuntu-20.04-amd64.charm \
+	deploy ./finos-legend-studio-k8s_ubuntu-20.04-amd64.charm \
 	--config /path/to/studio_config.yaml \
 	--resource studio-image=finos/legend-studio:0.2.56
 
-juju add-relation legend-studio-operator legend-database-manager
-juju add-relation legend-studio-operator legend-sdlc-server-operator
-juju add-relation legend-studio-operator legend-engine-server-operator
+juju add-relation finos-legend-studio-k8s finos-legend-db-k8s
+juju add-relation finos-legend-studio-k8s finos-legend-sdlc-k8s
+juju add-relation finos-legend-studio-k8s finos-legend-engine-k8s
 ```
 
 ## End result:
@@ -110,22 +110,22 @@ Note that the ports can be modified via config.
 
 ```bash
 ubuntu@nashu-vm:~/repos$ juju status
-Model     Controller  Cloud/Region        Version  SLA          Timestamp
-k8s-demo  micro       microk8s/localhost  2.9.11   unsupported  14:47:07Z
+Model   Controller  Cloud/Region        Version  SLA          Timestamp
+legend  micro       microk8s/localhost  2.9.14   unsupported  13:23:36Z
 
-App                            Version  Status  Scale  Charm                          Store     Channel  Rev  OS          Address         Message
-legend-database-manager                 active      1  legend-database-manager        local               17  kubernetes  10.152.183.26
-legend-engine-server-operator           active      1  legend-engine-server-operator  local               12  kubernetes  10.152.183.156
-legend-sdlc-server-operator             active      1  legend-sdlc-server-operator    local               39  kubernetes  10.152.183.48
-legend-studio-operator                  active      1  legend-studio-operator         local                8  kubernetes  10.152.183.221
-mongodb-k8s                             active      1  mongodb-k8s                    charmhub  edge       2  kubernetes  10.152.183.132
+App                      Version  Status  Scale  Charm                    Store     Channel  Rev  OS          Address         Message
+finos-legend-db-k8s               active      1  finos-legend-db-k8s      local                1  kubernetes  10.152.183.27   
+finos-legend-engine-k8s           active      1  finos-legend-engine-k8s  local                0  kubernetes  10.152.183.170  
+finos-legend-sdlc-k8s             active      1  finos-legend-sdlc-k8s    local                4  kubernetes  10.152.183.100  
+finos-legend-studio-k8s           active      1  finos-legend-studio-k8s  local                1  kubernetes  10.152.183.125  
+mongodb-k8s                       active      1  mongodb-k8s              charmhub  edge       4  kubernetes  10.152.183.30   
 
-Unit                              Workload  Agent  Address       Ports  Message
-legend-database-manager/0*        active    idle   10.1.184.248         Ready to be related to Legend components.
-legend-engine-server-operator/0*  active    idle   10.1.184.202         Engine service has been started.
-legend-sdlc-server-operator/0*    active    idle   10.1.184.196         SDLC service has been started.
-legend-studio-operator/0*         active    idle   10.1.184.195         Studio service has been started.
-mongodb-k8s/0*                    active    idle   10.1.184.231
+Unit                        Workload  Agent  Address       Ports  Message
+finos-legend-db-k8s/0*      active    idle   10.1.184.243         Ready to be related to Legend components.
+finos-legend-engine-k8s/0*  active    idle   10.1.184.247         Engine service has been started.
+finos-legend-sdlc-k8s/0*    active    idle   10.1.184.246         SDLC service has been started.
+finos-legend-studio-k8s/0*  active    idle   10.1.184.249         Studio service has been started.
+mongodb-k8s/0*              active    idle   10.1.184.237         
 ```
 
 ### NOTE: remember to set the correct redirect URIs in Gitlab!!!
@@ -134,5 +134,5 @@ mongodb-k8s/0*                    active    idle   10.1.184.231
 All components should be relate-able to the `nginx-ingress-integrator`:
 ```bash
 juju deploy nginx-ingress-integrator
-juju add-relation legend-studio-operator nginx-ingress-integrator
+juju add-relation finos-legend-studio-k8s nginx-ingress-integrator
 ```

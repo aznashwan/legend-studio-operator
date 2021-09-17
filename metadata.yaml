@@ -1,12 +1,12 @@
 # Copyright 2021 Canonical
 # See LICENSE file for licensing details.
 
-name: legend-studio-operator
+name: finos-legend-studio-k8s
+display-name: FINOS Legend Studio Server
 
 # TODO(aznashwan): ask who should be here:
 maintainer: Nashwan Azhari <nazhari@cloudbasesolutions.com>
 
-display-name: FINOS Legend Studio Server
 description: |
   Data model integration and query service for the FINOS Legend stack.
 summary: |
@@ -15,17 +15,9 @@ summary: |
 description: |
   Data model integration and query service for the FINOS Legend stack.
 
-# TODO(aznashwan): request feedback for these:
-tags:
-- finos
-- fintech
-- legend
-
 requires:
   legend-db:
     interface: legend_mongodb
-    # TODO(aznashwan): will we need a second relation for the PAC4J Mongo
-    # backend settings or can we have two databases created in just one?
     limit: 1
     optional: false
     scope: global
