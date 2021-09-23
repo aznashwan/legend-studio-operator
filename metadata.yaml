@@ -22,6 +22,12 @@ requires:
     optional: false
     scope: global
 
+  legend-studio-gitlab:
+    interface: legend_studio_gitlab
+    limit: 1
+    optional: false
+    scope: global
+
   legend-sdlc:
     interface: legend_sdlc
     limit: 1

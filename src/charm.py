@@ -6,6 +6,7 @@
 
 import json
 import logging
+import subprocess
 
 from ops import charm
 from ops import framework
@@ -13,16 +14,19 @@ from ops import main
 from ops import model
 
 from charms.finos_legend_db_k8s.v0 import legend_database
+from charms.finos_legend_gitlab_integrator_k8s.v0 import legend_gitlab
 from charms.nginx_ingress_integrator.v0 import ingress
 
 
 logger = logging.getLogger(__name__)
 
-
 STUDIO_UI_CONFIG_FILE_CONTAINER_LOCAL_PATH = "/ui-config.json"
 STUDIO_HTTP_CONFIG_FILE_CONTAINER_LOCAL_PATH = "/http-config.json"
 
 APPLICATION_SERVER_UI_PATH = "/studio"
+STUDIO_SERVICE_URL_FORMAT = "%(schema)s://%(host)s:%(port)s%(path)s"
+STUDIO_GITLAB_REDIRECT_URI_FORMAT = "%(base_url)s/log.in/callback"
+
 APPLICATION_CONNECTOR_TYPE_HTTP = "http"
 APPLICATION_CONNECTOR_PORT_HTTP = 8080
 APPLICATION_CONNECTOR_TYPE_HTTPS = "https"
@@ -31,11 +35,7 @@ APPLICATION_CONNECTOR_PORT_HTTPS = 8081
 VALID_APPLICATION_LOG_LEVEL_SETTINGS = [
     "INFO", "WARN", "DEBUG", "TRACE", "OFF"]
 
-GITLAB_PROJECT_VISIBILITY_PUBLIC = "public"
-GITLAB_PROJECT_VISIBILITY_PRIVATE = "private"
 GITLAB_REQUIRED_SCOPES = ["openid", "profile", "api"]
-GITLAB_OPENID_DISCOVERY_URL = (
-    "https://gitlab.com/.well-known/openid-configuration")
 
 
 class LegendStudioServerOperatorCharm(charm.CharmBase):
@@ -50,14 +50,13 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
 
         self._legend_db_consumer = legend_database.LegendDatabaseConsumer(
             self)
+        self._legend_gitlab_consumer = legend_gitlab.LegendGitlabConsumer(
+            self, relation_name="legend-studio-gitlab")
         self.ingress = ingress.IngressRequires(
-            self,
-            {
+            self, {
                 "service-hostname": self.app.name,
                 "service-name": self.app.name,
-                "service-port": APPLICATION_CONNECTOR_PORT_HTTP,
-            },
-        )
+                "service-port": APPLICATION_CONNECTOR_PORT_HTTP})
 
         # Standard charm lifecycle events:
         self.framework.observe(
@@ -72,6 +71,14 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         self.framework.observe(
             self.on["legend-db"].relation_changed,
             self._on_db_relation_changed)
+
+        # GitLab integrator lifecycle:
+        self.framework.observe(
+            self.on["legend-studio-gitlab"].relation_joined,
+            self._on_legend_gitlab_relation_joined)
+        self.framework.observe(
+            self.on["legend-studio-gitlab"].relation_changed,
+            self._on_legend_gitlab_relation_changed)
 
         # SDLC relation events:
         self.framework.observe(
@@ -92,6 +99,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
     def _set_stored_defaults(self) -> None:
         self._stored.set_default(log_level="DEBUG")
         self._stored.set_default(legend_db_credentials={})
+        self._stored.set_default(legend_gitlab_credentials={})
         self._stored.set_default(sdlc_service_url="")
         self._stored.set_default(engine_service_url="")
 
@@ -124,7 +132,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
                     # NOTE(aznashwan): considering the Studio service expects
                     # a singular config file which already contains all
                     # relevant options in it (some of which will require the
-                    # relation with DB/Gitlab to have already been
+                    # relation with DB/GitLab to have already been
                     # established), we do not auto-start:
                     "startup": "disabled",
                     # TODO(aznashwan): determine any env vars we could pass
@@ -138,11 +146,12 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         container.add_layer("studio", pebble_layer, combine=True)
 
         # NOTE(aznashwan): as mentioned above, we will *not* be auto-starting
-        # the service until the relations with DBMan and Gitlab are added:
+        # the service until the relations with DBMan and GitLab are added:
         # container.autostart()
 
         self.unit.status = model.BlockedStatus(
-            "Awaiting Legend Database and Gitlab relations.")
+            "requires relating to: finos-legend-db-k8s, "
+            "finos-legend-gitlab-integrator-k8s")
 
     def _get_logging_level_from_config(self, option_name):
         """Fetches the config option with the given name and checks to
@@ -172,25 +181,26 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         sdlc_url = self._stored.sdlc_service_url
         if not sdlc_url:
             return model.BlockedStatus(
-                "Need Legend SDLC relation to configure the Studio service.")
+                "requires relating to: finos-legend-sdlc-k8s, "
+                "finos-legend-engine-k8s")
 
         engine_url = self._stored.engine_service_url
         if not engine_url:
             return model.BlockedStatus(
-                "Need Legend Engine relation to configure Studio service.")
+                "requires relating to: finos-legend-engine-k8s")
 
         # TODO(aznashwan): fill in the URLs from relation data:
         ui_config.update({
             "appName": "studio",
             "env": "test",
             "sdlc": {
-                "url": "http://10.107.9.20:7070/api"
+                "url": sdlc_url
             },
             "metadata": {
                 "url": "__LEGEND_DEPOT_URL__/api"
             },
             "engine": {
-                "url": "http://10.107.9.20:6060/api"
+                "url": engine_url
             },
             "documentation": {
                 "url": "https://legend.finos.org"
@@ -213,15 +223,22 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             are present and have passed Charm-side valiation steps.
             A `model.BlockedStatus` instance with a relevant message otherwise.
         """
-        # Check gitlab-related options:
-        # TODO(aznashwan): remove this check on eventual Gitlab relation:
-        gitlab_client_id = self.model.config.get('gitlab-client-id')
-        gitlab_client_secret = self.model.config.get('gitlab-client-secret')
-        if not all([
-                gitlab_client_id, gitlab_client_secret]):
+        # Check Mongo-related options:
+        mongo_creds = self._stored.legend_db_credentials
+        if not mongo_creds:
             return model.BlockedStatus(
-                "One or more Gitlab-related charm configuration options "
-                "are missing.")
+                "requires relating to: finos-legend-db-k8s")
+
+        # Check GitLab-related options:
+        legend_gitlab_creds = self._stored.legend_gitlab_credentials
+        if not legend_gitlab_creds:
+            return model.BlockedStatus(
+                "requires relating to: finos-legend-gitlab-integrator-k8s")
+        gitlab_client_id = legend_gitlab_creds['client_id']
+        gitlab_client_secret = legend_gitlab_creds[
+            'client_secret']
+        gitlab_openid_discovery_url = legend_gitlab_creds[
+            'openid_discovery_url']
 
         # Check Java logging options:
         pac4j_logging_level = self._get_logging_level_from_config(
@@ -231,16 +248,8 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         if not all([
                 server_logging_level, pac4j_logging_level]):
             return model.BlockedStatus(
-                "One or more logging config options are improperly formatted "
-                "or missing. Please review the debug-log for more details.")
-
-        # Check Mongo-related options:
-        mongo_creds = self._stored.legend_db_credentials
-        if not mongo_creds:
-            return model.BlockedStatus(
-                "No stored MongoDB credentials were found yet. Please "
-                "ensure the Charm is properly related to the Legend "
-                "Database Manager charm.")
+                "one or more logging config options are improperly formatted "
+                "or missing, please review the debug-log for more details")
 
         # Compile base config:
         studio_http_config.update({
@@ -273,7 +282,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
                         "name": "gitlab",
                         "clientId": gitlab_client_id,
                         "secret": gitlab_client_secret,
-                        "discoveryUri": GITLAB_OPENID_DISCOVERY_URL,
+                        "discoveryUri": gitlab_openid_discovery_url,
                         # NOTE(aznashwan): needs to be a space-separated str:
                         "scope": " ".join(GITLAB_REQUIRED_SCOPES)
                     }
@@ -361,13 +370,23 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
                 STUDIO_UI_CONFIG_FILE_CONTAINER_LOCAL_PATH,
                 ui_config)
             self._restart_studio_service(container)
-            self.unit.status = model.ActiveStatus(
-                "Studio service has been started.")
+            self.unit.status = model.ActiveStatus()
             return
 
         logger.info("Studio container is not active yet. No config to update.")
         self.unit.status = model.BlockedStatus(
-            "Awaiting Legend DB and Gitlab relations.")
+            "requires relating to: finos-legend-db-k8s, "
+            "finos-legend-gitlab-integrator-k8s")
+
+    def _get_studio_service_url(self):
+        ip_address = subprocess.check_output(
+            ["unit-get", "private-address"]).decode().strip()
+        return STUDIO_SERVICE_URL_FORMAT % ({
+            # NOTE(aznashwan): we always return the plain HTTP endpoint:
+            "schema": "http",
+            "host": ip_address,
+            "port": APPLICATION_CONNECTOR_PORT_HTTP,
+            "path": APPLICATION_SERVER_UI_PATH})
 
     def _on_config_changed(self, _) -> None:
         """Reacts to configuration changes to the service by:
@@ -386,7 +405,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
             event.relation.id)
         if not mongo_creds:
             self.unit.status = model.WaitingStatus(
-                "Awaiting DB relation data.")
+                "awaiting legend db relation data")
             event.defer()
             return
         logger.debug(
@@ -395,6 +414,38 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         self._stored.legend_db_credentials = mongo_creds
 
         # Attempt to reconfigure and restart the service with the new data:
+        self._reconfigure_studio_service()
+
+    def _on_legend_gitlab_relation_joined(
+            self, event: charm.RelationJoinedEvent) -> None:
+        base_url = self._get_studio_service_url()
+        redirect_uris = [
+            STUDIO_GITLAB_REDIRECT_URI_FORMAT % {"base_url": base_url}]
+
+        legend_gitlab.set_legend_gitlab_redirect_uris_in_relation_data(
+            event.relation.data[self.app], redirect_uris)
+
+    def _on_legend_gitlab_relation_changed(
+            self, event: charm.RelationChangedEvent) -> None:
+        gitlab_creds = None
+        try:
+            gitlab_creds = (
+                self._legend_gitlab_consumer.get_legend_gitlab_creds(
+                    event.relation.id))
+        except Exception as ex:
+            logger.exception(ex)
+            self.unit.status = model.BlockedStatus(
+                "failed to retrieve GitLab creds from relation data, "
+                "ensure finos-legend-gitlab-integrator-k8s is compatible")
+            return
+
+        if not gitlab_creds:
+            self.unit.status = model.WaitingStatus(
+                "awaiting legend gitlab credentials from integrator")
+            event.defer()
+            return
+
+        self._stored.legend_gitlab_credentials = gitlab_creds
         self._reconfigure_studio_service()
 
     def _on_sdlc_relation_joined(self, event: charm.RelationJoinedEvent):
@@ -407,7 +458,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         sdlc_url = rel.data[event.app].get("legend-sdlc-url")
         if not sdlc_url:
             self.unit.status = model.WaitingStatus(
-                "Waiting for SDLC relation to report service URL.")
+                "waiting for legend sdlc to report service URL.")
             return
 
         logger.info("### SDLC URL received from relation: %s", sdlc_url)
@@ -427,7 +478,7 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         engine_url = rel.data[event.app].get("legend-engine-url")
         if not engine_url:
             self.unit.status = model.WaitingStatus(
-                "Waiting for Engine relation to report service URL.")
+                "waiting for legend engine to report service url")
             return
 
         logger.info("### Engine URL received from relation: %s", engine_url)

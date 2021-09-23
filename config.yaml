@@ -28,9 +28,3 @@ options:
     description: |
       String identifier of the log level to be used by authentication-related
       PAC4J actions. Must be one of INFO, WARN, DEBUG, or TRACE, or OFF.
-
-  # TODO(aznashwan): remove these after gitlab relation defined:
-  gitlab-client-id:
-    type: string
-  gitlab-client-secret:
-    type: string
