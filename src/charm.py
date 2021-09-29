@@ -4,6 +4,7 @@
 
 """ Module defining the Charmed operator for the FINOS Legend Studio. """
 
+import base64
 import json
 import logging
 import subprocess
@@ -12,6 +13,7 @@ from ops import charm
 from ops import framework
 from ops import main
 from ops import model
+import jks
 
 from charms.finos_legend_db_k8s.v0 import legend_database
 from charms.finos_legend_gitlab_integrator_k8s.v0 import legend_gitlab
@@ -26,6 +28,11 @@ STUDIO_HTTP_CONFIG_FILE_CONTAINER_LOCAL_PATH = "/http-config.json"
 APPLICATION_SERVER_UI_PATH = "/studio"
 STUDIO_SERVICE_URL_FORMAT = "%(schema)s://%(host)s:%(port)s%(path)s"
 STUDIO_GITLAB_REDIRECT_URI_FORMAT = "%(base_url)s/log.in/callback"
+
+TRUSTSTORE_TYPE_JKS = "jks"
+TRUSTSTORE_NAME = "Legend Studio"
+TRUSTSTORE_PASSPHRASE = "Legend Studio"
+TRUSTSTORE_CONTAINER_LOCAL_PATH = "/truststore.jks"
 
 APPLICATION_CONNECTOR_TYPE_HTTP = "http"
 APPLICATION_CONNECTOR_PORT_HTTP = 8080
@@ -123,10 +130,14 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
                         # NOTE(aznashwan): starting through bash is required
                         # for the classpath glob (-cp ...) to be expanded:
                         "/bin/sh -c 'java -XX:+ExitOnOutOfMemoryError -Xss4M "
-                        "-XX:MaxRAMPercentage=60 -Dfile.encoding=UTF8 -cp "
-                        "/app/bin/webapp-content:/app/bin/* "
+                        "-XX:MaxRAMPercentage=60 -Dfile.encoding=UTF8 "
+                        "-Djavax.net.ssl.trustStore=\"%s\" "
+                        "-Djavax.net.ssl.trustStorePassword=\"%s\" "
+                        "-cp /app/bin/webapp-content:/app/bin/* "
                         "org.finos.legend.server.shared.staticserver.Server "
-                        "server %s'" % (
+                        "server \"%s\"'" % (
+                            TRUSTSTORE_CONTAINER_LOCAL_PATH,
+                            TRUSTSTORE_PASSPHRASE,
                             STUDIO_HTTP_CONFIG_FILE_CONTAINER_LOCAL_PATH)
                     ),
                     # NOTE(aznashwan): considering the Studio service expects
@@ -333,7 +344,49 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
         """
         logger.debug("Restarting Studio service")
         container.restart("studio")
-        logger.debug("Successfully issues Studio service restart")
+        logger.debug("Successfully issued Studio service restart")
+
+    def _write_java_truststore_to_container(self, container):
+        """Creates a Java jsk truststore from the certificate in the GitLab
+        relation data and adds it into the container under the appropriate
+        path.
+        Returns a `model.BlockedStatus` if any issue occurs.
+        """
+        gitlab_cert_b64 = self._stored.legend_gitlab_credentials.get(
+            "gitlab_host_cert_b64")
+        if not gitlab_cert_b64:
+            return model.BlockedStatus(
+                "no 'gitlab_host_cert_b64' present in relation data")
+
+        gitlab_cert_raw = None
+        try:
+            gitlab_cert_raw = base64.b64decode(gitlab_cert_b64)
+        except Exception as ex:
+            logger.exception(ex)
+            return model.BlockedStatus("failed to decode b64 cert")
+
+        keystore_dump = None
+        try:
+            cert_entry = jks.TrustedCertEntry.new(
+                TRUSTSTORE_NAME, gitlab_cert_raw)
+            keystore = jks.KeyStore.new(
+                TRUSTSTORE_TYPE_JKS, [cert_entry])
+            keystore_dump = keystore.saves(TRUSTSTORE_PASSPHRASE)
+        except Exception as ex:
+            logger.exception(ex)
+            return model.BlockedStatus(
+                "failed to create jks keystore: %s", str(ex))
+
+        logger.debug(
+            "Adding jks trustore under '%s' in container",
+            TRUSTSTORE_CONTAINER_LOCAL_PATH)
+        container.push(
+            TRUSTSTORE_CONTAINER_LOCAL_PATH,
+            keystore_dump,
+            make_dirs=True)
+        logger.info(
+            "Successfully wrote java truststore file to %s",
+            TRUSTSTORE_CONTAINER_LOCAL_PATH)
 
     def _reconfigure_studio_service(self) -> None:
         """Generates the JSON config for the Studio server and adds it
@@ -360,6 +413,13 @@ class LegendStudioServerOperatorCharm(charm.CharmBase):
 
         container = self.unit.get_container("studio")
         if container.can_connect():
+            possible_blocked_status = (
+                self._write_java_truststore_to_container(
+                    container))
+            if possible_blocked_status:
+                self.unit.status = possible_blocked_status
+                return
+
             logger.debug("Updating Studio service configuration")
             self._add_config_file_to_container(
                 container,
